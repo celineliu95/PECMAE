@@ -6,8 +6,8 @@ import os
 import pandas as pd
 from tqdm import tqdm
 
-if '/content/encodecmae_legacy' not in sys.path:
-    sys.path.insert(0, '/content/encodecmae_legacy')
+if '/content/encodecmae' not in sys.path:
+    sys.path.insert(0, '/content/encodecmae')
 
 from encodecmae_to_wav.hub import load_model
 

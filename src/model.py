@@ -20,6 +20,9 @@ class PrototypicalNetwork(nn.Module):
             
         self.linear = nn.Linear(self.M, self.num_classes, bias=False)
         self._initialize_linear_layer()
+        
+        self.register_buffer('data_mean', torch.zeros(1, self.D))
+        self.register_buffer('data_std', torch.ones(1, self.D))
 
     def _initialize_linear_layer(self):
         with torch.no_grad():
@@ -28,6 +31,11 @@ class PrototypicalNetwork(nn.Module):
                 start_idx = c * self.num_prototypes_per_class
                 end_idx = start_idx + self.num_prototypes_per_class
                 self.linear.weight[c, start_idx:end_idx] = 1.0
+        self.linear.weight.requires_grad = False
+        
+    def set_normalization_stats(self, mean, std):
+        self.data_mean.copy_(mean.view(1, -1))
+        self.data_std.copy_(std.view(1, -1))
                 
     def get_projected_prototypes(self):
         
@@ -53,8 +61,7 @@ class PrototypicalNetwork(nn.Module):
 
     def compute_loss(self, logits, z_x, z_p, labels, lambda_weight=0.25):
         
-        labels_onehot = F.one_hot(labels, num_classes=self.num_classes).float()
-        loss_c = F.binary_cross_entropy_with_logits(logits, labels_onehot)
+        loss_c = F.cross_entropy(logits, labels)
         
         loss_p = 0.0
         
@@ -70,7 +77,7 @@ class PrototypicalNetwork(nn.Module):
             end_idx = start_idx + self.num_prototypes_per_class
             z_pc = z_p[start_idx:end_idx] # (num_prototypes_per_class, D)
             
-            dist_sq_c = torch.cdist(z_xc, z_pc, p=2.0) ** 2 # (N_c, num_prototypes_per_class)
+            dist_sq_c = torch.cdist(z_xc, z_pc, p=2.0) ** 2 / self.D # (N_c, num_prototypes_per_class)
             
             min_dist_per_prototype, _ = torch.min(dist_sq_c, dim=0) # (num_prototypes_per_class,)
             
@@ -82,7 +89,7 @@ class PrototypicalNetwork(nn.Module):
         
         return total_loss, loss_c, loss_p
     
-    def get_prototype(self, class_idx, n_th, projected=True):
+    def get_prototype(self, class_idx, n_th, projected=True, denormalize=True):
         
         if class_idx < 0 or class_idx >= self.num_classes:
             raise ValueError(f"class_idx must be between 0 and {self.num_classes - 1}")
@@ -93,6 +100,11 @@ class PrototypicalNetwork(nn.Module):
         
         if projected:
             all_z_p = self.get_projected_prototypes()
-            return all_z_p[absolute_idx]
+            proto = all_z_p[absolute_idx]
         else:
-            return self.prototypes[absolute_idx]
+            proto = self.prototypes[absolute_idx]
+        
+        if denormalize:
+            proto = (proto * self.data_std) + self.data_mean
+            
+        return proto

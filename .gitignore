@@ -3,6 +3,7 @@ __pycache__/
 saves/
 .DS_Store
 prototypes_audio/.DS_Store
+prototypes_audio/medley_prototypes/.DS_Store
 
 ### JupyterNotebooks ###
 # gitignore template for Jupyter Notebooks

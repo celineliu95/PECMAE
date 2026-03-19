@@ -3,6 +3,7 @@ import torch
 from scipy.io import wavfile
 from tqdm import tqdm
 from model import PrototypicalNetwork
+import numpy as np
 from encodecmae_to_wav.hub import load_model
 
 MEDLEY_INSTRUMENTS = {
@@ -44,11 +45,12 @@ def generate_and_save_prototypes(trained_model, diff_model, num_prototypes, outp
                 z_p_batch = z_p.to(device)
                 
                 waveform = diff_model.sample(z_p_batch)
+                wave_int16 = np.int16(waveform * 32767)
                 
                 filename = f"prototype_{p_idx}.wav"
                 filepath = os.path.join(class_dir, filename)
                 
-                wavfile.write(filepath, 24000, waveform)
+                wavfile.write(filepath, 24000, wave_int16)
                 
     print("Done.")
 

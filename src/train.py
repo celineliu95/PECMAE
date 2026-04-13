@@ -45,25 +45,21 @@ def init_prototypes_with_kmeans(model, dataloader, device):
             new_prototypes[start_idx:end_idx] = centroids
         
     model.prototypes.data.copy_(new_prototypes.to(device))  
-  
-def train_step(model, z_x, labels, optimizer, scheduler, lambda_weight, device):
+
+def extract_latent_states(model, dataloader, device):
+    model.eval()
+    all_zx = []
+    all_labels = []
+    with torch.no_grad():
+        for z_x, labels in dataloader:
+            all_zx.append(z_x.cpu())
+            all_labels.append(labels.cpu())
+            
+    zx_tensor = torch.cat(all_zx, dim=0)
+    labels_tensor = torch.cat(all_labels, dim=0)
+    zp_tensor = model.get_projected_prototypes().cpu().detach()
     
-    model.train()
-    z_x, labels = z_x.to(device), labels.to(device)
-    
-    optimizer.zero_grad()
-    
-    logits, S, z_p = model(z_x)
-    
-    loss, loss_c, loss_p = model.compute_loss(logits, z_x, z_p, labels, lambda_weight)
-    
-    loss.backward()
-    
-    optimizer.step()
-    if scheduler is not None:
-        scheduler.step()
-        
-    return loss.item(), loss_c.item(), loss_p.item()
+    return zx_tensor, labels_tensor, zp_tensor
 
 def eval_model(model, loader, lambda_weight, device='cuda'):
     model.eval()
@@ -92,11 +88,28 @@ def eval_model(model, loader, lambda_weight, device='cuda'):
     
     return total_loss / len(loader)
 
-def train_model(model, train_loader, num_epochs, lambda_weight=0.25, device='cuda'):
+def train_step(model, z_x, labels, optimizer, scheduler, lambda_weight, device):
+    
+    model.train()
+    z_x, labels = z_x.to(device), labels.to(device)
+    
+    optimizer.zero_grad()
+    
+    logits, S, z_p = model(z_x)
+    
+    loss, loss_c, loss_p = model.compute_loss(logits, z_x, z_p, labels, lambda_weight)
+    
+    loss.backward()
+    
+    optimizer.step()
+    if scheduler is not None:
+        scheduler.step()
+        
+    return loss.item(), loss_c.item(), loss_p.item()
+
+def train_model(model, train_loader, num_epochs, lambda_weight=0.25, device='cuda', save_path='saves/best_prototypical_network.pth'):
 
     model = model.to(device)
-    
-    init_prototypes_with_kmeans(model, train_loader, device)
     
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
     
@@ -154,7 +167,7 @@ def train_model(model, train_loader, num_epochs, lambda_weight=0.25, device='cud
         
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            torch.save(model.state_dict(), 'saves/best_prototypical_network.pth')
+            torch.save(model.state_dict(), save_path)
         
     print("\nTraining done.")
     return model
@@ -171,13 +184,15 @@ if __name__ == "__main__":
     parser.add_argument('--features_file', type=str, default='data/features.pt')
     parser.add_argument('--batch_size', type=int, default=256)
     parser.add_argument('--num_workers', type=int, default=4)
+    parser.add_argument('--freeze_linear', action='store_true', help="Freeze the linear classification layer")
+    parser.add_argument('--save_path', type=str, default='saves/best_prototypical_network.pth')
     
     args = parser.parse_args()
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Using device: {device}")
     
-    model = PrototypicalNetwork(num_classes=8, num_prototypes_per_class=args.num_prototypes_per_class, embedding_dim=768, use_adaptor=args.use_adaptor)
+    model = PrototypicalNetwork(num_classes=8, num_prototypes_per_class=args.num_prototypes_per_class, embedding_dim=768, use_adaptor=args.use_adaptor, freeze_linear=args.freeze_linear)
     
     train_loader, val_loader, test_loader, train_mean, train_std = create_dataloaders(
         features_file=args.features_file,
@@ -190,12 +205,21 @@ if __name__ == "__main__":
     print("\nEvaluating untrained model on test set...")
     eval_model(model, test_loader, args.lambda_weight, device=device)
 
+    print("\nInitializing prototypes with K-Means")
+    init_prototypes_with_kmeans(model, train_loader, device)
+
+    print("\nEvaluating Zero-Shot K-Means")
+    eval_model(model, test_loader, args.lambda_weight, device=device)
+
+    zx_test, labels_test, zp_before = extract_latent_states(model, test_loader, device)
+
     trained_model = train_model(
         model=model,
         train_loader=train_loader,
         num_epochs=args.num_epochs,
         lambda_weight=args.lambda_weight,
-        device=device
+        device=device,
+        save_path=args.save_path
     )
     
     print("\nEvaluating trained model on test set...")
@@ -206,3 +230,12 @@ if __name__ == "__main__":
     
     print("\nEvaluating best model on test set...")
     eval_model(best_model, test_loader, args.lambda_weight, device=device)
+
+    _, _, zp_after = extract_latent_states(best_model, test_loader, device)
+    latent_data_path = args.save_path.replace('.pth', '_latent_tensors.pt')
+    torch.save({
+        'zx': zx_test,            # Real samples embeddings
+        'labels': labels_test,    # Corresponding class labels
+        'zp_before': zp_before,   # Prototypes at K-Means init
+        'zp_after': zp_after      # Prototypes after final training
+    }, latent_data_path)

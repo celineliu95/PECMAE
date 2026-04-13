@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class PrototypicalNetwork(nn.Module):
-    def __init__(self, num_classes, num_prototypes_per_class, embedding_dim=768, use_adaptor=True):
+    def __init__(self, num_classes, num_prototypes_per_class, embedding_dim=768, use_adaptor=True, freeze_linear=True):
         super().__init__()
         
         self.num_classes = num_classes
@@ -19,6 +19,7 @@ class PrototypicalNetwork(nn.Module):
             self.adaptor = nn.TransformerEncoder(encoder_layer, num_layers=1)
             
         self.linear = nn.Linear(self.M, self.num_classes, bias=False)
+        self.freeze_linear = freeze_linear
         self._initialize_linear_layer()
         
         self.register_buffer('data_mean', torch.zeros(1, self.D))
@@ -31,7 +32,7 @@ class PrototypicalNetwork(nn.Module):
                 start_idx = c * self.num_prototypes_per_class
                 end_idx = start_idx + self.num_prototypes_per_class
                 self.linear.weight[c, start_idx:end_idx] = 1.0
-        self.linear.weight.requires_grad = False
+        self.linear.weight.requires_grad = not self.freeze_linear
         
     def set_normalization_stats(self, mean, std):
         self.data_mean.copy_(mean.view(1, -1))

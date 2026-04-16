@@ -10,7 +10,6 @@ from model import PrototypicalNetwork
 from utils_dataset import create_dataloaders
 
 def init_prototypes_with_kmeans(model, dataloader, device):
-    
     model.eval()
     all_zx = []
     all_labels = []
@@ -70,7 +69,7 @@ def eval_model(model, loader, lambda_weight, device='cuda'):
     
     with torch.no_grad():
         for z_x, labels in loader:
-            z_x = z_x.to(device)
+            z_x, labels = z_x.to(device), labels.to(device)
             
             logits, S, z_p = model(z_x)
             
@@ -89,7 +88,6 @@ def eval_model(model, loader, lambda_weight, device='cuda'):
     return total_loss / len(loader)
 
 def train_step(model, z_x, labels, optimizer, scheduler, lambda_weight, device):
-    
     model.train()
     z_x, labels = z_x.to(device), labels.to(device)
     
@@ -100,16 +98,19 @@ def train_step(model, z_x, labels, optimizer, scheduler, lambda_weight, device):
     loss, loss_c, loss_p = model.compute_loss(logits, z_x, z_p, labels, lambda_weight)
     
     loss.backward()
-    
     optimizer.step()
+
     if scheduler is not None:
         scheduler.step()
         
     return loss.item(), loss_c.item(), loss_p.item()
 
-def train_model(model, train_loader, num_epochs, lambda_weight=0.25, device='cuda', save_path='saves/best_prototypical_network.pth'):
-
+def train_model(model, train_loader, num_epochs, lambda_weight=0.25, device='cuda', save_path='saves/best_prototypical_network.pth', freeze_linear=False, warmup_epochs=0):
     model = model.to(device)
+    
+    if freeze_linear and warmup_epochs == 0:
+        print("\nFreeze linear layer at initialization.")
+        model.linear.weight.requires_grad = False
     
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
     
@@ -124,6 +125,11 @@ def train_model(model, train_loader, num_epochs, lambda_weight=0.25, device='cud
     best_val_loss = float("inf")
     
     for epoch in range(num_epochs):
+
+        if freeze_linear and warmup_epochs > 0 and epoch == warmup_epochs:
+            print(f"\n[Epoch {epoch+1}] Warm-up done, freezing the linear layer...")
+            model.linear.weight.requires_grad = False
+
         epoch_loss = 0.0
         epoch_loss_c = 0.0
         epoch_loss_p = 0.0
@@ -181,10 +187,11 @@ if __name__ == "__main__":
     parser.add_argument('--lambda_weight', type=float, default=0.25)
     parser.add_argument('--num_prototypes_per_class', type=int, default=5)
     parser.add_argument('--use_adaptor', type=bool, default=True)
-    parser.add_argument('--features_file', type=str, default='data/features.pt')
+    parser.add_argument('--features_file', type=str, default='data/medley_features.pt')
     parser.add_argument('--batch_size', type=int, default=256)
     parser.add_argument('--num_workers', type=int, default=4)
     parser.add_argument('--freeze_linear', action='store_true', help="Freeze the linear classification layer")
+    parser.add_argument('--warmup_epochs', type=int, default=0, help="Number of epochs before freezing (if freeze_linear is set to True)")
     parser.add_argument('--save_path', type=str, default='saves/best_prototypical_network.pth')
     
     args = parser.parse_args()
@@ -192,7 +199,7 @@ if __name__ == "__main__":
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Using device: {device}")
     
-    model = PrototypicalNetwork(num_classes=8, num_prototypes_per_class=args.num_prototypes_per_class, embedding_dim=768, use_adaptor=args.use_adaptor, freeze_linear=args.freeze_linear)
+    model = PrototypicalNetwork(num_classes=8, num_prototypes_per_class=args.num_prototypes_per_class, embedding_dim=768, use_adaptor=args.use_adaptor)
     
     train_loader, val_loader, test_loader, train_mean, train_std = create_dataloaders(
         features_file=args.features_file,
@@ -219,14 +226,16 @@ if __name__ == "__main__":
         num_epochs=args.num_epochs,
         lambda_weight=args.lambda_weight,
         device=device,
-        save_path=args.save_path
+        save_path=args.save_path,
+        freeze_linear=args.freeze_linear,
+        warmup_epochs=args.warmup_epochs
     )
     
     print("\nEvaluating trained model on test set...")
     eval_model(trained_model, test_loader, args.lambda_weight, device=device)
     
     best_model = PrototypicalNetwork(num_classes=8, num_prototypes_per_class=args.num_prototypes_per_class, embedding_dim=768, use_adaptor=args.use_adaptor).to(device)
-    best_model.load_state_dict(torch.load("saves/best_prototypical_network.pth", map_location=device))
+    best_model.load_state_dict(torch.load(args.save_path, map_location=device))
     
     print("\nEvaluating best model on test set...")
     eval_model(best_model, test_loader, args.lambda_weight, device=device)

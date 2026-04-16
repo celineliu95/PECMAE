@@ -3,23 +3,23 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class PrototypicalNetwork(nn.Module):
-    def __init__(self, num_classes, num_prototypes_per_class, embedding_dim=768, use_adaptor=True, freeze_linear=True):
+    def __init__(self, num_classes, num_prototypes_per_class, embedding_dim=768, use_adaptor=True, temp=0.1):
         super().__init__()
         
         self.num_classes = num_classes
         self.num_prototypes_per_class = num_prototypes_per_class
         self.M = num_classes * num_prototypes_per_class
         self.D = embedding_dim
+        self.temp = temp
         
         self.prototypes = nn.Parameter(torch.randn(self.M, self.D))
         
         self.use_adaptor = use_adaptor
         if self.use_adaptor:
-            encoder_layer = nn.TransformerEncoderLayer(d_model=self.D, nhead=8, batch_first=True)
+            encoder_layer = nn.TransformerEncoderLayer(d_model=self.D, nhead=1, batch_first=True) #8
             self.adaptor = nn.TransformerEncoder(encoder_layer, num_layers=1)
             
         self.linear = nn.Linear(self.M, self.num_classes, bias=False)
-        self.freeze_linear = freeze_linear
         self._initialize_linear_layer()
         
         self.register_buffer('data_mean', torch.zeros(1, self.D))
@@ -32,7 +32,6 @@ class PrototypicalNetwork(nn.Module):
                 start_idx = c * self.num_prototypes_per_class
                 end_idx = start_idx + self.num_prototypes_per_class
                 self.linear.weight[c, start_idx:end_idx] = 1.0
-        self.linear.weight.requires_grad = not self.freeze_linear
         
     def set_normalization_stats(self, mean, std):
         self.data_mean.copy_(mean.view(1, -1))
@@ -62,7 +61,9 @@ class PrototypicalNetwork(nn.Module):
 
     def compute_loss(self, logits, z_x, z_p, labels, lambda_weight=0.25):
         
-        loss_c = F.cross_entropy(logits, labels)
+        scaled_logits = logits / self.temp 
+        loss_c = F.cross_entropy(scaled_logits, labels)
+        #loss_c = F.cross_entropy(logits, labels)
         
         loss_p = 0.0
         
